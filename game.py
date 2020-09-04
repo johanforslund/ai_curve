@@ -53,4 +53,5 @@ class GameState:
 actions = np.array([0, 1, 0])
 
 game = GameState()
-game.frame_step(actions)
+while True:
+    game.frame_step(actions)
