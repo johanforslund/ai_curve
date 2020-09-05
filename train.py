@@ -5,6 +5,7 @@ from collections import deque
 import skimage
 from skimage.color import rgb2gray
 from skimage import transform
+from game import GameState
 import random
 
 LEARNING_RATE = 1e-4
