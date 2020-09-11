@@ -3,10 +3,10 @@
 import math
 import random
 import pygame
-import tkinter as tk
 
 WINDOW_SIZE = 500
-ROWS = 20
+ROWS = 12
+START_POS = (6,6)
 
 pygame.init()
 screen = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
@@ -16,10 +16,15 @@ training = False
 
 class Game:
     def __init__(self):
-        self.snake = Snake((10,10))
-        draw_border()
+        self.snake = Snake(START_POS)
+        self.reset()
+        self.high_score = 0
 
-    def frame_step(self, action):
+    def step(self, action):
+        #pygame.time.wait(70)
+        reward = 1
+        terminal = False
+
         pygame.event.pump()
 
         self.snake.move(action)
@@ -28,14 +33,30 @@ class Game:
 
         terminal = self.snake.check_collision()
         if terminal:
-            self.snake.reset((10, 10))
-            screen.fill((0,0,0))
-            draw_border()
+            # self.reset()
+            terminal = True
+            reward = -10
+            score = len(self.snake.body)
+            if score > self.high_score:
+                self.high_score = score
+            print('Score: ', score, 'High score: ', self.high_score)
 
         self.snake.draw()
 
         pygame.display.update()
+        next_state = pygame.surfarray.array3d(pygame.display.get_surface())
 
+        return (next_state, reward, terminal)
+    
+    def reset(self):
+        self.snake.reset(START_POS)
+        screen.fill((0,0,0))
+        draw_border()
+
+        pygame.display.update()
+        state = pygame.surfarray.array3d(pygame.display.get_surface())
+        return state
+        
 class Snake(object):
     body = []
     turns = {}
@@ -109,7 +130,7 @@ class Snake(object):
 
     def draw(self):
         for i, c in enumerate(self.body):
-            if i ==0:
+            if i == 0:
                 c.draw(eyes=True)
             else:
                 c.draw()
@@ -117,8 +138,6 @@ class Snake(object):
     def check_collision(self):
         for x in range(len(self.body)):
             if self.body[x].pos in list(map(lambda z:z.pos, self.body[x+1:])):
-                print('Score: ', len(self.body))
-                self.reset((10,10))
                 return True
 
         if self.head.pos[0] == ROWS-1 or self.head.pos[0] == 0 or self.head.pos[1] == ROWS -1 or self.head.pos[1] == 0:
@@ -199,8 +218,7 @@ def play_controller(game):
                     action = [0, 0, 0, 1]
                 else:
                     action = None
-
-        game.frame_step(action)
-
-game = Game()
-play_controller(game)
+        game.step(action)
+       
+#game = Game()
+#play_controller(game)
