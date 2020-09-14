@@ -1,5 +1,3 @@
-#Snake Tutorial Python
-
 import math
 import random
 import pygame
@@ -29,17 +27,20 @@ class Game:
 
         self.snake.move(action)
 
+        screen.fill((0,0,0))
+        draw_border()
+
         self.snake.add_cube()
 
         terminal = self.snake.check_collision()
         if terminal:
             # self.reset()
             terminal = True
-            reward = -10
+            reward = -1
             score = len(self.snake.body)
             if score > self.high_score:
                 self.high_score = score
-            print('Score: ', score, 'High score: ', self.high_score)
+            #print('Score: ', score, 'High score: ', self.high_score)
 
         self.snake.draw()
 
@@ -85,7 +86,24 @@ class Snake(object):
         elif action[3] == 1:
             self.dirnx = 0
             self.dirny = 1
-            self.turns[self.head.pos[:]] = [self.dirnx, self.dirny]                    
+            self.turns[self.head.pos[:]] = [self.dirnx, self.dirny]
+
+        # if action == 0:
+        #     self.dirnx = -1
+        #     self.dirny = 0
+        #     self.turns[self.head.pos[:]] = [self.dirnx, self.dirny]
+        # elif action == 1:
+        #     self.dirnx = 1
+        #     self.dirny = 0
+        #     self.turns[self.head.pos[:]] = [self.dirnx, self.dirny]
+        # elif action == 2:
+        #     self.dirnx = 0
+        #     self.dirny = -1
+        #     self.turns[self.head.pos[:]] = [self.dirnx, self.dirny]
+        # elif action == 3:
+        #     self.dirnx = 0
+        #     self.dirny = 1
+        #     self.turns[self.head.pos[:]] = [self.dirnx, self.dirny]               
 
         for i, c in enumerate(self.body):
             p = c.pos[:]

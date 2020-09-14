@@ -69,17 +69,17 @@ def stack_frames(stacked_frames, state, is_new_episode):
 
 ### MODEL HYPERPARAMETERS
 state_size = [84,84,4]      # Our input is a stack of 4 frames hence 84x84x4 (Width, height, channels) 
-learning_rate =  0.00025      # Alpha (aka learning rate)
+learning_rate =  1e-4      # Alpha (aka learning rate)
 
 ### TRAINING HYPERPARAMETERS
-total_episodes = 500         # Total episodes for training
-max_steps = 100              # Max possible steps in an episode
+total_episodes = 10000         # Total episodes for training
+max_steps = 1000             # Max possible steps in an episode
 batch_size = 64            
 
 # Exploration parameters for epsilon greedy strategy
 explore_start = 1.0            # exploration probability at start
 explore_stop = 0.01            # minimum exploration probability 
-decay_rate = 0.00001           # exponential decay rate for exploration prob
+decay_rate = 0.00005           # exponential decay rate for exploration prob
 
 # Q learning hyperparameters
 gamma = 0.9                    # Discounting rate
@@ -103,21 +103,18 @@ class DQNetwork:
     def build_model(self):
         input = keras.Input(shape=self.state_size)
         x = layers.Conv2D(32, 8, strides=(4,4))(input)
-        x = layers.BatchNormalization(epsilon=1e-5)(x)
-        x = layers.Activation("elu")(x)
-        x = layers.Conv2D(64, 4, strides=(2,2))(x)
-        x = layers.BatchNormalization(epsilon=1e-5)(x)
-        x = layers.Activation("elu")(x)
-        x = layers.Conv2D(128, 4, strides=(2,2))(x)
-        x = layers.BatchNormalization(epsilon=1e-5)(x)
-        x = layers.Activation("elu")(x)
+        x = layers.Activation('relu')(x)
+        x = layers.Conv2D(64, 4, strides=(2,2))(input)
+        x = layers.Activation('relu')(x)
+        x = layers.Conv2D(64, 3, strides=(2,2))(input)
+        x = layers.Activation('relu')(x)
         x = layers.Flatten()(x)
         x = layers.Dense(512)(x)
-        x = layers.Activation("elu")(x)
+        x = layers.Activation('relu')(x)
         output = layers.Dense(NUM_ACTIONS)(x)
 
         model = keras.Model(input, output)
-        model.compile(optimizer=keras.optimizers.RMSprop(self.learning_rate), loss="mse")
+        model.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss="mse")
         return model
 
 dqn = DQNetwork(state_size, learning_rate)
@@ -203,6 +200,8 @@ def predict_action(explore_start, explore_stop, decay_rate, decay_step, state, a
 if training == True:
     # Initialize the decay rate (that will use to reduce epsilon) 
     decay_step = 0
+
+    all_rewards = []
     
     for episode in range(total_episodes):
         # Set step to 0
@@ -248,10 +247,12 @@ if training == True:
                 # Get the total reward of the episode
                 total_reward = np.sum(episode_rewards)
 
-                # print('Episode: {}'.format(episode),
-                #                 'Total reward: {}'.format(total_reward),
-                #                 'Explore P: {:.4f}'.format(explore_probability),
-                #             'Training Loss {:.4f}'.format(loss))
+                all_rewards.append(total_reward)
+
+                print('Episode: {}'.format(episode),
+                                'Total reward: {}'.format(total_reward),
+                                'Explore P: {:.4f}'.format(explore_probability),
+                                'Training Loss {:.4f}'.format(loss))
 
                 # Store transition <st,at,rt+1,st+1> in memory D
                 memory.add((state, action, reward, next_state, terminal))
@@ -266,13 +267,7 @@ if training == True:
                 # st+1 is now our current state
                 state = next_state
             
-            # Plot stacked_frames
-            # f, axarr = plt.subplots(2,2)
-            # axarr[0,0].imshow(stacked_frames[0])
-            # axarr[0,1].imshow(stacked_frames[1])
-            # axarr[1,0].imshow(stacked_frames[2])
-            # axarr[1,1].imshow(stacked_frames[3])
-            #plt.show()
+                           
                 
             ### LEARNING PART            
             # Obtain random mini-batch from memory
@@ -283,9 +278,16 @@ if training == True:
             next_states_mb = np.array([each[3] for each in batch], ndmin=3)
             dones_mb = np.array([each[4] for each in batch])
 
-            target_Qs_batch = []
+            # Plot stacked_frames
+            #f, axarr = plt.subplots(2,2)
+            #axarr[0,0].imshow(states_mb[0, :, :, 0])
+            #axarr[0,1].imshow(states_mb[0, :, :, 1])
+            #axarr[1,0].imshow(states_mb[0, :, :, 2])
+            #axarr[1,1].imshow(states_mb[0, :, :, 3])
+            #plt.show()
 
-            # Get Q values for next_state 
+            # Get Q values for next_state
+            Qs_state = dqn.model.predict(states_mb)
             Qs_next_state = dqn.model.predict(next_states_mb)
             
             # Set Q_target = r if the episode ends at s+1, otherwise set Q_target = r + gamma*maxQ(s', a')
@@ -294,21 +296,20 @@ if training == True:
 
                 # If we are in a terminal state, only equals reward
                 if terminal:
-                    target_Qs_batch.append(rewards_mb[i])
+                    #target = rewards_mb[i]
+                    target = np.clip(rewards_mb[i], -1, 1)
+                    #target_Qs_batch.append(target)
                     
                 else:
-                    target = rewards_mb[i] + gamma * np.max(Qs_next_state[i])
-                    target_Qs_batch.append(target)
+                    #target = rewards_mb[i] + gamma * np.max(Qs_next_state[i])
+                    target = np.clip(rewards_mb[i] + gamma * np.max(Qs_next_state[i]), -1, 1)
+                
+                Qs_state[i, actions_mb[i].astype(bool)] = target
                     
+            loss = dqn.model.train_on_batch(states_mb, Qs_state)
 
-            targets_mb = np.array([each for each in target_Qs_batch])
+        if episode % 10 == 0:
+            print(np.mean(np.array(all_rewards)[-10:]))
 
-            loss = dqn.model.train_on_batch(states_mb, targets_mb)
-            
-            if step % 5 == 0:
-                print("======> Loss: ", loss)
-
-        # Save model every 5 episodes
-        if episode % 5 == 0:
-            #save_path = saver.save(sess, "./models/model.ckpt")
-            print("Model not Saved")
+    plt.plot(all_rewards)
+    plt.show()
