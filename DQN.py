@@ -6,7 +6,22 @@ import random                # Handling random number generation
 import time                  # Handling time calculation
 from skimage import transform# Help us to preprocess the frames
 from skimage.color import rgb2gray
+import wandb
 from snake import Game
+
+wandb.init(
+    project="ai-snake",
+    config={
+        "learning_rate": 5e-4,
+        "decay_rate": 0.0005,
+        "gamma": 0.9,
+        "pos_reward": 0.1,
+        "neg_reward": -1,
+        "loss": "mse"
+    }
+)
+
+config = wandb.config
 
 from collections import deque# Ordered collection with ends
 import matplotlib.pyplot as plt # Display graphs
@@ -22,7 +37,7 @@ POSSIBLE_ACTIONS = [left, right, up, down]
 NUM_ACTIONS = len(POSSIBLE_ACTIONS)
 
 # Instansiate env
-env = Game()
+env = Game(config.pos_reward, config.neg_reward)
 
 def preprocess_frame(frame):
     # Greyscale frame 
@@ -69,7 +84,7 @@ def stack_frames(stacked_frames, state, is_new_episode):
 
 ### MODEL HYPERPARAMETERS
 state_size = [84,84,4]      # Our input is a stack of 4 frames hence 84x84x4 (Width, height, channels) 
-learning_rate =  1e-4      # Alpha (aka learning rate)
+learning_rate =  config.learning_rate      # Alpha (aka learning rate)
 
 ### TRAINING HYPERPARAMETERS
 total_episodes = 10000         # Total episodes for training
@@ -79,10 +94,10 @@ batch_size = 64
 # Exploration parameters for epsilon greedy strategy
 explore_start = 1.0            # exploration probability at start
 explore_stop = 0.01            # minimum exploration probability 
-decay_rate = 0.00005           # exponential decay rate for exploration prob
+decay_rate = config.decay_rate           # exponential decay rate for exploration prob
 
 # Q learning hyperparameters
-gamma = 0.9                    # Discounting rate
+gamma = config.gamma                    # Discounting rate
 
 ### MEMORY HYPERPARAMETERS
 pretrain_length = batch_size   # Number of experiences stored in the Memory when initialized for the first time
@@ -114,7 +129,7 @@ class DQNetwork:
         output = layers.Dense(NUM_ACTIONS)(x)
 
         model = keras.Model(input, output)
-        model.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss="mse")
+        model.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss=config.loss)
         return model
 
 dqn = DQNetwork(state_size, learning_rate)
@@ -297,12 +312,12 @@ if training == True:
                 # If we are in a terminal state, only equals reward
                 if terminal:
                     #target = rewards_mb[i]
-                    target = np.clip(rewards_mb[i], -1, 1)
+                    target = rewards_mb[i]
                     #target_Qs_batch.append(target)
                     
                 else:
                     #target = rewards_mb[i] + gamma * np.max(Qs_next_state[i])
-                    target = np.clip(rewards_mb[i] + gamma * np.max(Qs_next_state[i]), -1, 1)
+                    target = rewards_mb[i] + gamma * np.max(Qs_next_state[i])
                 
                 Qs_state[i, actions_mb[i].astype(bool)] = target
                     
@@ -310,6 +325,4 @@ if training == True:
 
         if episode % 10 == 0:
             print(np.mean(np.array(all_rewards)[-10:]))
-
-    plt.plot(all_rewards)
-    plt.show()
+            wandb.log({'Reward': np.mean(np.array(all_rewards)[-10:])})

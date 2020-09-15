@@ -13,14 +13,16 @@ clock = pygame.time.Clock()
 training = False
 
 class Game:
-    def __init__(self):
+    def __init__(self, pos_reward, neg_reward):
         self.snake = Snake(START_POS)
         self.reset()
         self.high_score = 0
+        self.pos_reward = pos_reward
+        self.neg_reward = neg_reward
 
     def step(self, action):
         #pygame.time.wait(70)
-        reward = 1
+        reward = self.pos_reward
         terminal = False
 
         pygame.event.pump()
@@ -36,7 +38,7 @@ class Game:
         if terminal:
             # self.reset()
             terminal = True
-            reward = -1
+            reward = self.neg_reward
             score = len(self.snake.body)
             if score > self.high_score:
                 self.high_score = score
