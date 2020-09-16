@@ -1,3 +1,4 @@
+!pip install wandb
 import tensorflow as tf      # Deep Learning library
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -10,6 +11,7 @@ import wandb
 from snake import Game
 
 wandb.init(
+    name="fixed-target",
     project="ai-snake",
     config={
         "learning_rate": 5e-4,
@@ -110,7 +112,7 @@ training = True
 #episode_render = False
 
 class DQNetwork:
-    def __init__(self, state_size, learning_rate, name='DQNetwork'):
+    def __init__(self, state_size, learning_rate, name):
         self.state_size = state_size
         self.learning_rate = learning_rate
         self.model = self.build_model()
@@ -132,7 +134,8 @@ class DQNetwork:
         model.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss=config.loss)
         return model
 
-dqn = DQNetwork(state_size, learning_rate)
+dqn_net = DQNetwork(state_size, learning_rate, name='DQNetwork')
+target_net = DQNetwork(state_size, learning_rate, name='TargetNetwork')
 
 class Memory():
     def __init__(self, max_size):
@@ -202,7 +205,7 @@ def predict_action(explore_start, explore_stop, decay_rate, decay_step, state, a
     else:
         # Get action from Q-network (exploitation)
         # Estimate the Qs values state
-        Qs = dqn.model.predict(state.reshape((1, *state.shape)))
+        Qs = dqn_net.model.predict(state.reshape((1, *state.shape)))
         
         # Take the biggest Q value (= the best action)
         choice = np.argmax(Qs)
@@ -210,6 +213,9 @@ def predict_action(explore_start, explore_stop, decay_rate, decay_step, state, a
                 
     return action, explore_probability
 
+def update_target_graph():
+    weights = dqn_net.model.get_weights()
+    target_net.model.set_weights(weights)
 
 # TRAINING
 if training == True:
@@ -302,12 +308,16 @@ if training == True:
             #plt.show()
 
             # Get Q values for next_state
-            Qs_state = dqn.model.predict(states_mb)
-            Qs_next_state = dqn.model.predict(next_states_mb)
+            Qs_state = dqn_net.model.predict(states_mb)
+            Qs_next_state = dqn_net.model.predict(next_states_mb)
+            Qs_target_next_state = target_net.model.predict(next_states_mb)
             
             # Set Q_target = r if the episode ends at s+1, otherwise set Q_target = r + gamma*maxQ(s', a')
             for i in range(0, len(batch)):
                 terminal = dones_mb[i]
+
+                # We got a'
+                action = np.argmax(Qs_next_state[i])
 
                 # If we are in a terminal state, only equals reward
                 if terminal:
@@ -317,11 +327,13 @@ if training == True:
                     
                 else:
                     #target = rewards_mb[i] + gamma * np.max(Qs_next_state[i])
-                    target = rewards_mb[i] + gamma * np.max(Qs_next_state[i])
+                    target = rewards_mb[i] + gamma * Qs_target_next_state[i][action]
                 
                 Qs_state[i, actions_mb[i].astype(bool)] = target
                     
-            loss = dqn.model.train_on_batch(states_mb, Qs_state)
+            loss = dqn_net.model.train_on_batch(states_mb, Qs_state)
+          
+        update_target_graph()
 
         if episode % 10 == 0:
             print(np.mean(np.array(all_rewards)[-10:]))
