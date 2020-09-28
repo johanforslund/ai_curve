@@ -102,7 +102,9 @@ class Snake(object):
                 self.dirny = 0
             self.turns[self.head.pos[:]] = [self.dirnx, self.dirny]
         elif action[2] == 1:
-            pass
+            self.dirnx = self.dirnx
+            self.dirny = self.dirny
+            self.turns[self.head.pos[:]] = [self.dirnx, self.dirny]
         # elif action[2] == 1:
         #     self.dirnx = 0
         #     self.dirny = -1
@@ -247,6 +249,7 @@ def play_controller(game):
 
         for event in pygame.event.get():
             keys = pygame.key.get_pressed()
+            action = None
             for key in keys:
                 if keys[pygame.K_LEFT]:
                     action = [1, 0, 0]
@@ -257,7 +260,7 @@ def play_controller(game):
                 # elif keys[pygame.K_DOWN]:
                 #     action = [0, 0, 0, 1]
                 else:
-                    action = None
+                    action = [0, 0, 1]
         game.step(action)
        
 #game = Game()
