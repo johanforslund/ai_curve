@@ -1,14 +1,17 @@
-!pip install wandb
-import tensorflow as tf      # Deep Learning library
+import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-import numpy as np           # Handle matrices
-import random                # Handling random number generation
-import time                  # Handling time calculation
-from skimage import transform# Help us to preprocess the frames
+import numpy as np
+import random
+import time
+from skimage import transform
 from skimage.color import rgb2gray
 import wandb
+from collections import deque
+import matplotlib.pyplot as plt
 from snake import Game
+import warnings # This ignore all the warning messages that are normally printed during the training because of skiimage
+warnings.filterwarnings('ignore')
 
 wandb.init(
     name="fixed-target",
@@ -25,12 +28,6 @@ wandb.init(
 
 config = wandb.config
 
-from collections import deque# Ordered collection with ends
-import matplotlib.pyplot as plt # Display graphs
-
-import warnings # This ignore all the warning messages that are normally printed during the training because of skiimage
-warnings.filterwarnings('ignore')
-
 left = [1,0,0,0]
 right = [0,1,0,0]
 up = [0,0,1,0]
@@ -38,81 +35,172 @@ down = [0,0,0,1]
 POSSIBLE_ACTIONS = [left, right, up, down]
 NUM_ACTIONS = len(POSSIBLE_ACTIONS)
 
-# Instansiate env
-env = Game(config.pos_reward, config.neg_reward)
-
-def preprocess_frame(frame):
-    # Greyscale frame 
-    gray = rgb2gray(frame)
-    
-    # Normalize Pixel Values
-    normalized_frame = gray/255.0
-    
-    # Resize
-    preprocessed_frame = transform.resize(normalized_frame, [84,84])
-    
-    return preprocessed_frame
-
-stack_size = 4
-
-# Initialize deque with zero-images one array for each image
-stacked_frames  =  deque([np.zeros((84,84), dtype=np.int) for i in range(stack_size)], maxlen=4) 
-
-def stack_frames(stacked_frames, state, is_new_episode):
-    # Preprocess frame
-    frame = preprocess_frame(state)
-    
-    if is_new_episode:
-        # Clear our stacked_frames
-        stacked_frames = deque([np.zeros((84,84), dtype=np.int) for i in range(stack_size)], maxlen=4)
-        
-        # Because we're in a new episode, copy the same frame 4x
-        stacked_frames.append(frame)
-        stacked_frames.append(frame)
-        stacked_frames.append(frame)
-        stacked_frames.append(frame)
-        
-        # Stack the frames
-        stacked_state = np.stack(stacked_frames, axis=2)
-        
-    else:
-        # Append frame to deque, automatically removes the oldest frame
-        stacked_frames.append(frame)
-
-        # Build the stacked state (first dimension specifies different frames)
-        stacked_state = np.stack(stacked_frames, axis=2) 
-    
-    return stacked_state, stacked_frames
-
 ### MODEL HYPERPARAMETERS
-state_size = [84,84,4]      # Our input is a stack of 4 frames hence 84x84x4 (Width, height, channels) 
-learning_rate =  config.learning_rate      # Alpha (aka learning rate)
+state_size = [84,84,4]
+learning_rate =  config.learning_rate
 
 ### TRAINING HYPERPARAMETERS
-total_episodes = 10000         # Total episodes for training
-max_steps = 1000             # Max possible steps in an episode
-batch_size = 64            
+total_epochs = 10000
+max_steps = 1000
+batch_size = 64
 
 # Exploration parameters for epsilon greedy strategy
-explore_start = 1.0            # exploration probability at start
-explore_stop = 0.01            # minimum exploration probability 
-decay_rate = config.decay_rate           # exponential decay rate for exploration prob
+explore_start = 1.0
+explore_stop = 0.01
+decay_rate = config.decay_rate
 
 # Q learning hyperparameters
-gamma = config.gamma                    # Discounting rate
+gamma = config.gamma
 
 ### MEMORY HYPERPARAMETERS
-pretrain_length = batch_size   # Number of experiences stored in the Memory when initialized for the first time
-memory_size = 1000000          # Number of experiences the Memory can keep
+pretrain_length = batch_size
+memory_size = 1000000
 
-### MODIFY THIS TO FALSE IF YOU JUST WANT TO SEE THE TRAINED AGENT
-training = True
+def preprocess_frame(frame):
+    gray = rgb2gray(frame)
+    normalized_frame = gray/255.0
+    preprocessed_frame = transform.resize(normalized_frame, [84,84])
+    return preprocessed_frame
 
-## TURN THIS TO TRUE IF YOU WANT TO RENDER THE ENVIRONMENT
-#episode_render = False
+class Memory():
+    def __init__(self, max_size):
+        self.buffer = deque(maxlen = max_size)
+    
+    def add(self, experience):
+        self.buffer.append(experience)
+    
+    def sample(self, batch_size):
+        buffer_size = len(self.buffer)
+        index = np.random.choice(np.arange(buffer_size),
+                                size = batch_size,
+                                replace = False)
+        
+        return [self.buffer[i] for i in index]
+
+class Agent:
+    def __init__(self, env):
+        self.env = env
+        self.memory = Memory(max_size=memory_size)
+        self.stacked_frames = deque([np.zeros((84,84), dtype=np.int) for i in range(4)], maxlen=4) 
+
+        self.dqn_net = DQNetwork(state_size, learning_rate)
+        self.target_net = DQNetwork(state_size, learning_rate)
+
+    def stack_frames(self, state, is_new_episode):
+        frame = preprocess_frame(state)
+        
+        if is_new_episode:
+            self.stacked_frames = deque([np.zeros((84,84), dtype=np.int) for i in range(4)], maxlen=4)
+            for _ in range(4):
+                self.stacked_frames.append(frame)
+        else:
+            self.stacked_frames.append(frame)
+
+        return np.stack(self.stacked_frames, axis=2)
+
+    def pre_train(self):
+        for i in range(pretrain_length):
+            if i == 0:
+                state = self.env.reset()
+                state = self.stack_frames(state, True)
+                
+            action = random.choice(POSSIBLE_ACTIONS)
+            next_state, reward, terminal = self.env.step(action)
+            next_state = self.stack_frames(next_state, False)
+
+            if terminal:
+                next_state = np.zeros(state.shape)
+                
+                self.memory.add((state, action, reward, next_state, terminal))
+                
+                state = self.env.reset()
+                state = self.stack_frames(state, True)                
+            else:
+                self.memory.add((state, action, reward, next_state, terminal))
+                state = next_state
+
+    def train(self):
+        decay_step = 0
+        all_rewards = []
+        
+        for epoch in range(total_epochs):
+            step = 0
+            episode_rewards = []
+            
+            state = self.env.reset()
+            state = self.stack_frames(state, True)
+            
+            while step < max_steps:
+                step += 1            
+                decay_step +=1
+                
+                action, explore_probability = self.dqn_net.predict_action(explore_start, explore_stop, decay_rate, decay_step, state, POSSIBLE_ACTIONS)
+                
+                next_state, reward, terminal = self.env.step(action)
+                episode_rewards.append(reward)
+
+                if terminal:
+                    next_state = np.zeros((84,84), dtype=np.int)                    
+                    next_state = self.stack_frames(next_state, False)
+
+                    step = max_steps
+                    total_reward = np.sum(episode_rewards)
+                    all_rewards.append(total_reward)
+
+                    print('Epoch: {}'.format(epoch),
+                          'Total reward: {}'.format(total_reward),
+                          'Explore P: {:.4f}'.format(explore_probability),
+                          'Training Loss {:.4f}'.format(loss))
+
+                    self.memory.add((state, action, reward, next_state, terminal))
+                else:
+                    next_state = self.stack_frames(next_state, False)                
+                    self.memory.add((state, action, reward, next_state, terminal))
+                    state = next_state
+
+                batch = self.memory.sample(batch_size)
+                states_mb = np.array([each[0] for each in batch], ndmin=3)
+                actions_mb = np.array([each[1] for each in batch])
+                rewards_mb = np.array([each[2] for each in batch]) 
+                next_states_mb = np.array([each[3] for each in batch], ndmin=3)
+                dones_mb = np.array([each[4] for each in batch])
+
+                # Plot stacked_frames
+                #f, axarr = plt.subplots(2,2)
+                #axarr[0,0].imshow(states_mb[0, :, :, 0])
+                #axarr[0,1].imshow(states_mb[0, :, :, 1])
+                #axarr[1,0].imshow(states_mb[0, :, :, 2])
+                #axarr[1,1].imshow(states_mb[0, :, :, 3])
+                #plt.show()
+
+                Qs_state = self.dqn_net.model.predict(states_mb)
+                Qs_next_state = self.dqn_net.model.predict(next_states_mb)
+                Qs_target_next_state = self.target_net.model.predict(next_states_mb)
+
+                for i in range(0, len(batch)):
+                    terminal = dones_mb[i]
+                    action = np.argmax(Qs_next_state[i])
+                    if terminal:
+                        target = rewards_mb[i]                        
+                    else:
+                        target = rewards_mb[i] + gamma * Qs_target_next_state[i][action]
+                    
+                    Qs_state[i, actions_mb[i].astype(bool)] = target
+                        
+                loss = self.dqn_net.model.train_on_batch(states_mb, Qs_state)
+            
+            self.target_update()
+
+            if epoch % 10 == 0:
+                print(np.mean(np.array(all_rewards)[-10:]))
+                wandb.log({'Reward': np.mean(np.array(all_rewards)[-10:])})
+
+    def target_update(self):
+        weights = self.dqn_net.model.get_weights()
+        self.target_net.model.set_weights(weights)
 
 class DQNetwork:
-    def __init__(self, state_size, learning_rate, name):
+    def __init__(self, state_size, learning_rate):
         self.state_size = state_size
         self.learning_rate = learning_rate
         self.model = self.build_model()
@@ -134,207 +222,28 @@ class DQNetwork:
         model.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss=config.loss)
         return model
 
-dqn_net = DQNetwork(state_size, learning_rate, name='DQNetwork')
-target_net = DQNetwork(state_size, learning_rate, name='TargetNetwork')
+    def predict_action(self, explore_start, explore_stop, decay_rate, decay_step, state, actions):
+        exp_exp_tradeoff = np.random.rand()
 
-class Memory():
-    def __init__(self, max_size):
-        self.buffer = deque(maxlen = max_size)
-    
-    def add(self, experience):
-        self.buffer.append(experience)
-    
-    def sample(self, batch_size):
-        buffer_size = len(self.buffer)
-        index = np.random.choice(np.arange(buffer_size),
-                                size = batch_size,
-                                replace = False)
+        explore_probability = explore_stop + (explore_start - explore_stop) * np.exp(-decay_rate * decay_step)
         
-        return [self.buffer[i] for i in index]
-
-# Instantiate memory
-memory = Memory(max_size = memory_size)
-for i in range(pretrain_length):
-    # If it's the first step
-    if i == 0:
-        state = env.reset()
-        state, stacked_frames = stack_frames(stacked_frames, state, True)
-        
-    # Get the next_state, the rewards, done by taking a random action
-    action = random.choice(POSSIBLE_ACTIONS)
-    next_state, reward, terminal = env.step(action)
-    
-    #env.render()
-    
-    # Stack the frames
-    next_state, stacked_frames = stack_frames(stacked_frames, next_state, False)
-    # If the episode is finished (we're dead 3x)
-    if terminal:
-        # We finished the episode
-        next_state = np.zeros(state.shape)
-        
-        # Add experience to memory
-        memory.add((state, action, reward, next_state, terminal))
-        
-        # Start a new episode
-        state = env.reset()
-        
-        # Stack the frames
-        state, stacked_frames = stack_frames(stacked_frames, state, True)
-        
-    else:
-        # Add experience to memory
-        memory.add((state, action, reward, next_state, terminal))
-        
-        # Our new state is now the next_state
-        state = next_state
-
-def predict_action(explore_start, explore_stop, decay_rate, decay_step, state, actions):
-    ## EPSILON GREEDY STRATEGY
-    # Choose action a from state s using epsilon greedy.
-    ## First we randomize a number
-    exp_exp_tradeoff = np.random.rand()
-
-    # Here we'll use an improved version of our epsilon greedy strategy used in Q-learning notebook
-    explore_probability = explore_stop + (explore_start - explore_stop) * np.exp(-decay_rate * decay_step)
-    
-    if (explore_probability > exp_exp_tradeoff):
-        # Make a random action (exploration)
-        action = random.choice(POSSIBLE_ACTIONS)
-        
-    else:
-        # Get action from Q-network (exploitation)
-        # Estimate the Qs values state
-        Qs = dqn_net.model.predict(state.reshape((1, *state.shape)))
-        
-        # Take the biggest Q value (= the best action)
-        choice = np.argmax(Qs)
-        action = POSSIBLE_ACTIONS[int(choice)]
-                
-    return action, explore_probability
-
-def update_target_graph():
-    weights = dqn_net.model.get_weights()
-    target_net.model.set_weights(weights)
-
-# TRAINING
-if training == True:
-    # Initialize the decay rate (that will use to reduce epsilon) 
-    decay_step = 0
-
-    all_rewards = []
-    
-    for episode in range(total_episodes):
-        # Set step to 0
-        step = 0
-        
-        # Initialize the rewards of the episode
-        episode_rewards = []
-        
-        # Make a new episode and observe the first state
-        state = env.reset()
-        
-        # Remember that stack frame function also call our preprocess function.
-        state, stacked_frames = stack_frames(stacked_frames, state, True)
-        
-        while step < max_steps:
-            step += 1
+        if (explore_probability > exp_exp_tradeoff):
+            action = random.choice(POSSIBLE_ACTIONS)
             
-            #Increase decay_step
-            decay_step +=1
+        else:
+            Qs = self.model.predict(state.reshape((1, *state.shape)))
             
-            # Predict the action to take and take it
-            action, explore_probability = predict_action(explore_start, explore_stop, decay_rate, decay_step, state, POSSIBLE_ACTIONS)
-            
-            #Perform the action and get the next_state, reward, and done information
-            next_state, reward, terminal = env.step(action)
-            
-            # if episode_render:
-            #     env.render()
-            
-            # Add the reward to total reward
-            episode_rewards.append(reward)
-            
-            # If the game is finished
-            if terminal:
-                # The episode ends so no next state
-                next_state = np.zeros((84,84), dtype=np.int)
-                
-                next_state, stacked_frames = stack_frames(stacked_frames, next_state, False)
-
-                # Set step = max_steps to end the episode
-                step = max_steps
-
-                # Get the total reward of the episode
-                total_reward = np.sum(episode_rewards)
-
-                all_rewards.append(total_reward)
-
-                print('Episode: {}'.format(episode),
-                                'Total reward: {}'.format(total_reward),
-                                'Explore P: {:.4f}'.format(explore_probability),
-                                'Training Loss {:.4f}'.format(loss))
-
-                # Store transition <st,at,rt+1,st+1> in memory D
-                memory.add((state, action, reward, next_state, terminal))
-
-            else:
-                # Stack the frame of the next_state
-                next_state, stacked_frames = stack_frames(stacked_frames, next_state, False)
-            
-                # Add experience to memory
-                memory.add((state, action, reward, next_state, terminal))
-
-                # st+1 is now our current state
-                state = next_state
-            
-                           
-                
-            ### LEARNING PART            
-            # Obtain random mini-batch from memory
-            batch = memory.sample(batch_size)
-            states_mb = np.array([each[0] for each in batch], ndmin=3)
-            actions_mb = np.array([each[1] for each in batch])
-            rewards_mb = np.array([each[2] for each in batch]) 
-            next_states_mb = np.array([each[3] for each in batch], ndmin=3)
-            dones_mb = np.array([each[4] for each in batch])
-
-            # Plot stacked_frames
-            #f, axarr = plt.subplots(2,2)
-            #axarr[0,0].imshow(states_mb[0, :, :, 0])
-            #axarr[0,1].imshow(states_mb[0, :, :, 1])
-            #axarr[1,0].imshow(states_mb[0, :, :, 2])
-            #axarr[1,1].imshow(states_mb[0, :, :, 3])
-            #plt.show()
-
-            # Get Q values for next_state
-            Qs_state = dqn_net.model.predict(states_mb)
-            Qs_next_state = dqn_net.model.predict(next_states_mb)
-            Qs_target_next_state = target_net.model.predict(next_states_mb)
-            
-            # Set Q_target = r if the episode ends at s+1, otherwise set Q_target = r + gamma*maxQ(s', a')
-            for i in range(0, len(batch)):
-                terminal = dones_mb[i]
-
-                # We got a'
-                action = np.argmax(Qs_next_state[i])
-
-                # If we are in a terminal state, only equals reward
-                if terminal:
-                    #target = rewards_mb[i]
-                    target = rewards_mb[i]
-                    #target_Qs_batch.append(target)
+            choice = np.argmax(Qs)
+            action = POSSIBLE_ACTIONS[int(choice)]
                     
-                else:
-                    #target = rewards_mb[i] + gamma * np.max(Qs_next_state[i])
-                    target = rewards_mb[i] + gamma * Qs_target_next_state[i][action]
-                
-                Qs_state[i, actions_mb[i].astype(bool)] = target
-                    
-            loss = dqn_net.model.train_on_batch(states_mb, Qs_state)
-          
-        update_target_graph()
+        return action, explore_probability            
 
-        if episode % 10 == 0:
-            print(np.mean(np.array(all_rewards)[-10:]))
-            wandb.log({'Reward': np.mean(np.array(all_rewards)[-10:])})
+def main():
+    env = Game(config.pos_reward, config.neg_reward)
+    
+    agent = Agent(env)
+    agent.pre_train()
+    agent.train()
+
+if __name__ == "__main__":
+    main()
