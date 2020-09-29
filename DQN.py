@@ -98,6 +98,30 @@ class Agent:
 
         return np.stack(self.stacked_frames, axis=2)
 
+    def play(self):
+        self.dqn_net.model.load_weights('model.h5')
+
+        for i in range(pretrain_length*10):
+            if i == 0:
+                state = self.env.reset()
+                state = self.stack_frames(state, True)
+
+            Qs = self.dqn_net.model.predict(state.reshape((1, *state.shape)))
+            
+            choice = np.argmax(Qs)
+            action = POSSIBLE_ACTIONS[int(choice)]
+            next_state, reward, terminal = self.env.step(action)
+            next_state = self.stack_frames(next_state, False)
+
+            if terminal:
+                next_state = np.zeros(state.shape)
+                                
+                state = self.env.reset()
+                state = self.stack_frames(state, True)                
+            else:
+                state = next_state
+            
+
     def pre_train(self):
         for i in range(pretrain_length):
             if i == 0:
@@ -194,6 +218,7 @@ class Agent:
             if epoch % 10 == 0:
                 print(np.mean(np.array(all_rewards)[-10:]))
                 wandb.log({'Reward': np.mean(np.array(all_rewards)[-10:])})
+                self.dqn_net.model.save_weights('model.h5')
 
     def target_update(self):
         weights = self.dqn_net.model.get_weights()
@@ -209,9 +234,7 @@ class DQNetwork:
         input = keras.Input(shape=self.state_size)
         x = layers.Conv2D(32, 8, strides=(4,4))(input)
         x = layers.Activation('relu')(x)
-        x = layers.Conv2D(64, 4, strides=(2,2))(input)
-        x = layers.Activation('relu')(x)
-        x = layers.Conv2D(64, 3, strides=(2,2))(input)
+        x = layers.Conv2D(64, 4, strides=(2,2))(x)
         x = layers.Activation('relu')(x)
         x = layers.Flatten()(x)
         x = layers.Dense(512)(x)
@@ -244,6 +267,7 @@ def main():
     agent = Agent(env)
     agent.pre_train()
     agent.train()
+    #agent.play()
 
 if __name__ == "__main__":
     main()
