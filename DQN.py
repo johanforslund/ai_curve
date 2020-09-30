@@ -12,9 +12,11 @@ import matplotlib.pyplot as plt
 from snake import Game
 import warnings # This ignore all the warning messages that are normally printed during the training because of skiimage
 warnings.filterwarnings('ignore')
+from SumTree import SumTree
 
 wandb.init(
-    name="fixed-target",
+    name="Prioritized Dueling Double DQN",
+    notes="With subtract",
     project="ai-snake",
     config={
         "learning_rate": 5e-4,
@@ -40,7 +42,7 @@ state_size = [84,84,4]
 learning_rate =  config.learning_rate
 
 ### TRAINING HYPERPARAMETERS
-total_epochs = 10000
+total_epochs = 100000
 max_steps = 1000
 batch_size = 64
 
@@ -53,8 +55,8 @@ decay_rate = config.decay_rate
 gamma = config.gamma
 
 ### MEMORY HYPERPARAMETERS
-pretrain_length = batch_size
-memory_size = 1000000
+memory_size = 10000
+pretrain_length = memory_size
 
 def preprocess_frame(frame):
     gray = rgb2gray(frame)
@@ -62,25 +64,68 @@ def preprocess_frame(frame):
     preprocessed_frame = transform.resize(normalized_frame, [84,84])
     return preprocessed_frame
 
-class Memory():
-    def __init__(self, max_size):
-        self.buffer = deque(maxlen = max_size)
-    
-    def add(self, experience):
-        self.buffer.append(experience)
-    
-    def sample(self, batch_size):
-        buffer_size = len(self.buffer)
-        index = np.random.choice(np.arange(buffer_size),
-                                size = batch_size,
-                                replace = False)
+class Memory(object):
+
+    def __init__(self, capacity):
+        self.tree = SumTree(capacity)
+        self.PER_e = 0.01
+        self.PER_a = 0.6
+        self.PER_b = 0.4
+        self.PER_b_increment_per_sampling = 0.001
+        self.absolute_error_upper = 1.
+
+    def store(self, experience):
+        max_priority = np.max(self.tree.tree[-self.tree.capacity:])
+
+        if max_priority == 0:
+            max_priority = self.absolute_error_upper
+
+        self.tree.add(max_priority, experience)
+
+    def sample(self, n):
+        memory_b = []
+
+        b_idx, b_ISWeights = np.empty((n,), dtype=np.int32), np.empty((n, 1), dtype=np.float32)
+
+        priority_segment = self.tree.total_priority / n
+
+        self.PER_b = np.min([1., self.PER_b + self.PER_b_increment_per_sampling])
+
+        p_min = np.min(self.tree.tree[-self.tree.capacity:]) / self.tree.total_priority
         
-        return [self.buffer[i] for i in index]
+        max_weight = (p_min * n) ** (-self.PER_b)
+
+        for i in range(n):
+            a, b = priority_segment * i, priority_segment * (i + 1)
+            value = np.random.uniform(a, b)
+
+            index, priority, data = self.tree.get_leaf(value)
+
+            sampling_probabilities = priority / self.tree.total_priority
+
+            
+            b_ISWeights[i, 0] = np.power(n * sampling_probabilities, -self.PER_b)/ max_weight
+
+            b_idx[i]= index
+            
+            experience = data
+            
+            memory_b.append(experience)
+
+        return b_idx, memory_b, b_ISWeights
+
+    def batch_update(self, tree_idx, abs_errors):
+        abs_errors += self.PER_e
+        clipped_errors = np.minimum(abs_errors, self.absolute_error_upper)
+        ps = np.power(clipped_errors, self.PER_a)
+
+        for ti, p in zip(tree_idx, ps):
+            self.tree.update(ti, p)
 
 class Agent:
     def __init__(self, env):
         self.env = env
-        self.memory = Memory(max_size=memory_size)
+        self.memory = Memory(memory_size)
         self.stacked_frames = deque([np.zeros((84,84), dtype=np.int) for i in range(4)], maxlen=4) 
 
         self.dqn_net = DQNetwork(state_size, learning_rate)
@@ -135,12 +180,12 @@ class Agent:
             if terminal:
                 next_state = np.zeros(state.shape)
                 
-                self.memory.add((state, action, reward, next_state, terminal))
+                self.memory.store((state, action, reward, next_state, terminal))
                 
                 state = self.env.reset()
                 state = self.stack_frames(state, True)                
             else:
-                self.memory.add((state, action, reward, next_state, terminal))
+                self.memory.store((state, action, reward, next_state, terminal))
                 state = next_state
 
     def train(self):
@@ -176,13 +221,13 @@ class Agent:
                           'Explore P: {:.4f}'.format(explore_probability),
                           'Training Loss {:.4f}'.format(loss))
 
-                    self.memory.add((state, action, reward, next_state, terminal))
+                    self.memory.store((state, action, reward, next_state, terminal))
                 else:
                     next_state = self.stack_frames(next_state, False)                
-                    self.memory.add((state, action, reward, next_state, terminal))
+                    self.memory.store((state, action, reward, next_state, terminal))
                     state = next_state
 
-                batch = self.memory.sample(batch_size)
+                tree_idx, batch, ISWeights_mb = self.memory.sample(batch_size)
                 states_mb = np.array([each[0] for each in batch], ndmin=3)
                 actions_mb = np.array([each[1] for each in batch])
                 rewards_mb = np.array([each[2] for each in batch]) 
@@ -210,8 +255,18 @@ class Agent:
                         target = rewards_mb[i] + gamma * Qs_target_next_state[i][action]
                     
                     Qs_state[i, actions_mb[i].astype(bool)] = target
-                        
+                
+                self.dqn_net.is_weights = ISWeights_mb
                 loss = self.dqn_net.model.train_on_batch(states_mb, Qs_state)
+
+                y_pred_Q = self.dqn_net.model.predict(states_mb)
+                y_pred_Q = y_pred_Q[actions_mb.astype(bool)]
+
+                y_true_Q = Qs_state[actions_mb.astype(bool)]
+
+                absolute_errors = np.abs(y_true_Q - y_pred_Q)
+
+                self.memory.batch_update(tree_idx, absolute_errors)
             
             self.target_update()
 
@@ -229,20 +284,28 @@ class DQNetwork:
         self.state_size = state_size
         self.learning_rate = learning_rate
         self.model = self.build_model()
+        self.is_weights = None
+
+    def PER_loss(self):
+        def loss(y_true, y_pred):   
+            return tf.keras.backend.mean(self.is_weights * tf.square(y_true - y_pred))
+
+        return loss
 
     def build_model(self):
         input = keras.Input(shape=self.state_size)
-        x = layers.Conv2D(32, 8, strides=(4,4))(input)
-        x = layers.Activation('relu')(x)
-        x = layers.Conv2D(64, 4, strides=(2,2))(x)
-        x = layers.Activation('relu')(x)
+        x = layers.Conv2D(32, 8, strides=(4,4), activation="relu")(input)
+        x = layers.Conv2D(64, 4, strides=(2,2), activation="relu")(x)
         x = layers.Flatten()(x)
-        x = layers.Dense(512)(x)
-        x = layers.Activation('relu')(x)
-        output = layers.Dense(NUM_ACTIONS)(x)
-
+        value_fc = layers.Dense(512, activation="relu")(x)
+        value = layers.Dense(1)(value_fc)
+        advantage_fc = layers.Dense(512, activation="relu")(x)
+        advantage = layers.Dense(NUM_ACTIONS)(advantage_fc)
+        advantage_norm = layers.Subtract()([advantage, tf.keras.backend.mean(advantage, axis=1, keepdims=True)])
+        aggregation = layers.Add()([value, advantage_norm])
+        output = layers.Dense(NUM_ACTIONS)(aggregation)
         model = keras.Model(input, output)
-        model.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss=config.loss)
+        model.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss=self.PER_loss())
         return model
 
     def predict_action(self, explore_start, explore_stop, decay_rate, decay_step, state, actions):

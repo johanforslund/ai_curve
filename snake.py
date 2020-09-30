@@ -1,10 +1,12 @@
+
 import math
 import random
 import pygame
 
 WINDOW_SIZE = 500
 ROWS = 12
-START_POS = (6,6)
+START_POS = (10,10)
+RND_START_POS = True
 
 pygame.init()
 screen = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
@@ -14,14 +16,20 @@ training = False
 
 class Game:
     def __init__(self, pos_reward, neg_reward):
-        self.snake = Snake(START_POS)
+        self.snake = Snake(self.get_startpos())
         self.reset()
         self.high_score = 0
         self.pos_reward = pos_reward
         self.neg_reward = neg_reward
 
+    def get_startpos(self):
+      if RND_START_POS:
+        return (random.randint(1, ROWS-2), random.randint(1, ROWS-2))
+      else:
+        return START_POS
+
     def step(self, action):
-        #pygame.time.wait(70)
+        pygame.time.wait(70)
         reward = self.pos_reward
         terminal = False
 
@@ -36,7 +44,7 @@ class Game:
 
         terminal = self.snake.check_collision()
         if terminal:
-            # self.reset()
+            self.reset()
             terminal = True
             reward = self.neg_reward
             score = len(self.snake.body)
@@ -52,7 +60,7 @@ class Game:
         return (next_state, reward, terminal)
     
     def reset(self):
-        self.snake.reset(START_POS)
+        self.snake.reset(self.get_startpos())
         screen.fill((0,0,0))
         draw_border()
 
@@ -240,5 +248,5 @@ def play_controller(game):
                     action = None
         game.step(action)
        
-#game = Game()
+#game = Game(0.1, -1)
 #play_controller(game)
