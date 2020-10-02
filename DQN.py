@@ -9,6 +9,7 @@ from skimage.color import rgb2gray
 import wandb
 from collections import deque
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 from snake import Game
 import warnings # This ignore all the warning messages that are normally printed during the training because of skiimage
 warnings.filterwarnings('ignore')
@@ -24,7 +25,6 @@ wandb.init(
         "gamma": 0.9,
         "pos_reward": 0.1,
         "neg_reward": -1,
-        "loss": "mse"
     }
 )
 
@@ -102,8 +102,8 @@ class Memory(object):
             index, priority, data = self.tree.get_leaf(value)
 
             sampling_probabilities = priority / self.tree.total_priority
-
             
+
             b_ISWeights[i, 0] = np.power(n * sampling_probabilities, -self.PER_b)/ max_weight
 
             b_idx[i]= index
@@ -168,7 +168,7 @@ class Agent:
             
 
     def pre_train(self):
-        for i in range(pretrain_length):
+        for i in tqdm(range(pretrain_length)):
             if i == 0:
                 state = self.env.reset()
                 state = self.stack_frames(state, True)
@@ -191,6 +191,8 @@ class Agent:
     def train(self):
         decay_step = 0
         all_rewards = []
+        max_single_reward = -999
+        max_mean_reward = -999
         
         for epoch in range(total_epochs):
             step = 0
@@ -250,14 +252,13 @@ class Agent:
                     terminal = dones_mb[i]
                     action = np.argmax(Qs_next_state[i])
                     if terminal:
-                        target = rewards_mb[i]                        
+                        target = rewards_mb[i]
                     else:
                         target = rewards_mb[i] + gamma * Qs_target_next_state[i][action]
                     
                     Qs_state[i, actions_mb[i].astype(bool)] = target
                 
                 self.dqn_net.is_weights = ISWeights_mb
-                loss = self.dqn_net.model.train_on_batch(states_mb, Qs_state)
 
                 y_pred_Q = self.dqn_net.model.predict(states_mb)
                 y_pred_Q = y_pred_Q[actions_mb.astype(bool)]
@@ -267,13 +268,25 @@ class Agent:
                 absolute_errors = np.abs(y_true_Q - y_pred_Q)
 
                 self.memory.batch_update(tree_idx, absolute_errors)
-            
+
+                loss = self.dqn_net.model.train_on_batch(states_mb, Qs_state)
+
             self.target_update()
 
+            if total_reward > max_single_reward:
+                self.dqn_net.model.save_weights('model_single.h5')
+                max_single_reward = total_reward
+                print("Saving weights, maximum single reward reached: ", total_reward)
+
+            mean_reward = np.mean(np.array(all_rewards)[-10:])
+
             if epoch % 10 == 0:
-                print(np.mean(np.array(all_rewards)[-10:]))
-                wandb.log({'Reward': np.mean(np.array(all_rewards)[-10:])})
-                self.dqn_net.model.save_weights('model.h5')
+                print(mean_reward)
+                wandb.log({'Reward': mean_reward})
+                if mean_reward > max_mean_reward:
+                    self.dqn_net.model.save_weights('model_mean.h5')
+                    max_mean_reward = mean_reward
+                    print("Saving weights, maximum mean reward reached: ", mean_reward)
 
     def target_update(self):
         weights = self.dqn_net.model.get_weights()
@@ -288,20 +301,21 @@ class DQNetwork:
 
     def PER_loss(self):
         def loss(y_true, y_pred):   
-            return tf.keras.backend.mean(self.is_weights * tf.square(y_true - y_pred))
+            return tf.reduce_mean(self.is_weights * tf.math.squared_difference(y_true, y_pred))
 
         return loss
-
+    
     def build_model(self):
         input = keras.Input(shape=self.state_size)
         x = layers.Conv2D(32, 8, strides=(4,4), activation="relu")(input)
         x = layers.Conv2D(64, 4, strides=(2,2), activation="relu")(x)
+        #x = layers.Conv2D(64, 3, strides=(2,2), activation="relu")(x)
         x = layers.Flatten()(x)
         value_fc = layers.Dense(512, activation="relu")(x)
         value = layers.Dense(1)(value_fc)
         advantage_fc = layers.Dense(512, activation="relu")(x)
         advantage = layers.Dense(NUM_ACTIONS)(advantage_fc)
-        advantage_norm = layers.Subtract()([advantage, tf.keras.backend.mean(advantage, axis=1, keepdims=True)])
+        advantage_norm = layers.Subtract()([advantage, tf.reduce_mean(advantage, axis=1, keepdims=True)])
         aggregation = layers.Add()([value, advantage_norm])
         output = layers.Dense(NUM_ACTIONS)(aggregation)
         model = keras.Model(input, output)

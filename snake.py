@@ -5,7 +5,7 @@ import pygame
 
 WINDOW_SIZE = 500
 ROWS = 12
-START_POS = (10,10)
+START_POS = (ROWS//2, ROWS//2)
 RND_START_POS = True
 
 pygame.init()
@@ -29,7 +29,7 @@ class Game:
         return START_POS
 
     def step(self, action):
-        pygame.time.wait(70)
+        #pygame.time.wait(70)
         reward = self.pos_reward
         terminal = False
 
