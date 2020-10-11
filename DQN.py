@@ -10,21 +10,27 @@ import wandb
 from collections import deque
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from snake import Game
+from snake_mult_env import Game
 import warnings # This ignore all the warning messages that are normally printed during the training because of skiimage
 warnings.filterwarnings('ignore')
 from SumTree import SumTree
+import pygame
+#from google.colab import drive
+
+#drive.mount('/content/gdrive')
 
 wandb.init(
-    name="Prioritized Dueling Double DQN",
-    notes="With subtract",
+    name="RND div click Mult env Prioritized Dueling Double DQN",
+    notes="Two layers, 13 row, split env in 2, static start, 1 divider_prob, 1-8 rnd interval",
     project="ai-snake",
     config={
-        "learning_rate": 5e-4,
-        "decay_rate": 0.0005,
-        "gamma": 0.9,
+        "learning_rate": 0.0003,
+        "decay_rate": 0.0001,
+        "gamma": 0.993,
         "pos_reward": 0.1,
         "neg_reward": -1,
+        "explore_stop": 0.001,
+        "memory_size": 10000,
     }
 )
 
@@ -37,6 +43,11 @@ down = [0,0,0,1]
 POSSIBLE_ACTIONS = [left, right, up, down]
 NUM_ACTIONS = len(POSSIBLE_ACTIONS)
 
+TRAIN_FROM_WEIGHTS = False
+USE_RANDOM_CLICKS = True
+DIVIDER_PROB = 1
+RND_CLICK_INTERVAL = 8
+
 ### MODEL HYPERPARAMETERS
 state_size = [84,84,4]
 learning_rate =  config.learning_rate
@@ -47,15 +58,16 @@ max_steps = 1000
 batch_size = 64
 
 # Exploration parameters for epsilon greedy strategy
-explore_start = 1.0
-explore_stop = 0.01
+explore_stop = config.explore_stop
+explore_start = explore_stop if TRAIN_FROM_WEIGHTS else 1.0
+
 decay_rate = config.decay_rate
 
 # Q learning hyperparameters
 gamma = config.gamma
 
 ### MEMORY HYPERPARAMETERS
-memory_size = 10000
+memory_size = config.memory_size
 pretrain_length = memory_size
 
 def preprocess_frame(frame):
@@ -65,7 +77,6 @@ def preprocess_frame(frame):
     return preprocessed_frame
 
 class Memory(object):
-
     def __init__(self, capacity):
         self.tree = SumTree(capacity)
         self.PER_e = 0.01
@@ -103,7 +114,6 @@ class Memory(object):
 
             sampling_probabilities = priority / self.tree.total_priority
             
-
             b_ISWeights[i, 0] = np.power(n * sampling_probabilities, -self.PER_b)/ max_weight
 
             b_idx[i]= index
@@ -131,6 +141,13 @@ class Agent:
         self.dqn_net = DQNetwork(state_size, learning_rate)
         self.target_net = DQNetwork(state_size, learning_rate)
 
+        self.dqn_net.model.call = tf.function(self.dqn_net.model.call, experimental_relax_shapes=True)
+        self.target_net.model.call = tf.function(self.target_net.model.call, experimental_relax_shapes=True)
+
+        if TRAIN_FROM_WEIGHTS:
+            #self.dqn_net.model.load_weights('/content/gdrive/My Drive/vikter/two-layers/model_mean.h5')
+            self.dqn_net.model.load_weights('model_single.h5')
+
     def stack_frames(self, state, is_new_episode):
         frame = preprocess_frame(state)
         
@@ -144,18 +161,27 @@ class Agent:
         return np.stack(self.stacked_frames, axis=2)
 
     def play(self):
-        self.dqn_net.model.load_weights('model.h5')
+        self.dqn_net.model.load_weights('model_single.h5')
 
         for i in range(pretrain_length*10):
             if i == 0:
                 state = self.env.reset()
                 state = self.stack_frames(state, True)
 
-            Qs = self.dqn_net.model.predict(state.reshape((1, *state.shape)))
+            Qs = self.dqn_net.model(state.reshape((1, *state.shape)))
             
             choice = np.argmax(Qs)
             action = POSSIBLE_ACTIONS[int(choice)]
-            next_state, reward, terminal = self.env.step(action)
+
+            pygame.event.pump()
+            mouse_click = None
+
+            for event in pygame.event.get():
+                if event.type == pygame.MOUSEBUTTONUP:
+                    mouse_click = pygame.mouse.get_pos()
+                    
+            next_state, reward, terminal = self.env.step(action, mouse_click)
+
             next_state = self.stack_frames(next_state, False)
 
             if terminal:
@@ -166,15 +192,30 @@ class Agent:
             else:
                 state = next_state
             
-
     def pre_train(self):
         for i in tqdm(range(pretrain_length)):
             if i == 0:
                 state = self.env.reset()
                 state = self.stack_frames(state, True)
                 
-            action = random.choice(POSSIBLE_ACTIONS)
-            next_state, reward, terminal = self.env.step(action)
+            if TRAIN_FROM_WEIGHTS:
+                exp_exp_tradeoff = np.random.rand()
+                
+                if (explore_stop > exp_exp_tradeoff):
+                    action = random.choice(POSSIBLE_ACTIONS)
+                else:
+                    Qs = self.dqn_net.model(state.reshape((1, *state.shape)))
+                
+                    choice = np.argmax(Qs)
+                    action = POSSIBLE_ACTIONS[int(choice)]
+            else:
+                action = random.choice(POSSIBLE_ACTIONS)
+            rnd = random.randint(1, RND_CLICK_INTERVAL)
+            if USE_RANDOM_CLICKS and i % rnd == 0:
+                next_state, reward, terminal = self.env.step_with_random_click(action, divider_click_prob = DIVIDER_PROB)
+            else: 
+                next_state, reward, terminal = self.env.step(action)
+
             next_state = self.stack_frames(next_state, False)
 
             if terminal:
@@ -191,8 +232,8 @@ class Agent:
     def train(self):
         decay_step = 0
         all_rewards = []
-        max_single_reward = -999
-        max_mean_reward = -999
+        max_total_single_reward = -999
+        max_total_mean_reward = -999
         
         for epoch in range(total_epochs):
             step = 0
@@ -207,7 +248,12 @@ class Agent:
                 
                 action, explore_probability = self.dqn_net.predict_action(explore_start, explore_stop, decay_rate, decay_step, state, POSSIBLE_ACTIONS)
                 
-                next_state, reward, terminal = self.env.step(action)
+                rnd = random.randint(1, RND_CLICK_INTERVAL)
+                if USE_RANDOM_CLICKS and step % rnd == 0:
+                    next_state, reward, terminal = self.env.step_with_random_click(action, divider_click_prob = DIVIDER_PROB)
+                else: 
+                    next_state, reward, terminal = self.env.step(action)
+
                 episode_rewards.append(reward)
 
                 if terminal:
@@ -236,17 +282,9 @@ class Agent:
                 next_states_mb = np.array([each[3] for each in batch], ndmin=3)
                 dones_mb = np.array([each[4] for each in batch])
 
-                # Plot stacked_frames
-                #f, axarr = plt.subplots(2,2)
-                #axarr[0,0].imshow(states_mb[0, :, :, 0])
-                #axarr[0,1].imshow(states_mb[0, :, :, 1])
-                #axarr[1,0].imshow(states_mb[0, :, :, 2])
-                #axarr[1,1].imshow(states_mb[0, :, :, 3])
-                #plt.show()
-
-                Qs_state = self.dqn_net.model.predict(states_mb)
-                Qs_next_state = self.dqn_net.model.predict(next_states_mb)
-                Qs_target_next_state = self.target_net.model.predict(next_states_mb)
+                Qs_state = self.dqn_net.model(states_mb).numpy()
+                Qs_next_state = self.dqn_net.model(next_states_mb)
+                Qs_target_next_state = self.target_net.model(next_states_mb)
 
                 for i in range(0, len(batch)):
                     terminal = dones_mb[i]
@@ -260,7 +298,7 @@ class Agent:
                 
                 self.dqn_net.is_weights = ISWeights_mb
 
-                y_pred_Q = self.dqn_net.model.predict(states_mb)
+                y_pred_Q = self.dqn_net.model(states_mb)
                 y_pred_Q = y_pred_Q[actions_mb.astype(bool)]
 
                 y_true_Q = Qs_state[actions_mb.astype(bool)]
@@ -271,21 +309,23 @@ class Agent:
 
                 loss = self.dqn_net.model.train_on_batch(states_mb, Qs_state)
 
-            self.target_update()
-
-            if total_reward > max_single_reward:
-                self.dqn_net.model.save_weights('model_single.h5')
-                max_single_reward = total_reward
-                print("Saving weights, maximum single reward reached: ", total_reward)
+                self.target_update()
 
             mean_reward = np.mean(np.array(all_rewards)[-10:])
+
+            if total_reward > max_total_single_reward:
+                #self.dqn_net.model.save_weights('/content/gdrive/My Drive/vikter/two-layers/model_single.h5')
+                self.dqn_net.model.save_weights('model_single.h5')
+                max_total_single_reward = total_reward
+                print("Saving weights, maximum single reward reached: ", total_reward)
 
             if epoch % 10 == 0:
                 print(mean_reward)
                 wandb.log({'Reward': mean_reward})
-                if mean_reward > max_mean_reward:
+                if mean_reward > max_total_mean_reward:
+                    #self.dqn_net.model.save_weights('/content/gdrive/My Drive/vikter/two-layers/model_mean.h5')
                     self.dqn_net.model.save_weights('model_mean.h5')
-                    max_mean_reward = mean_reward
+                    max_total_mean_reward = mean_reward
                     print("Saving weights, maximum mean reward reached: ", mean_reward)
 
     def target_update(self):
@@ -302,7 +342,6 @@ class DQNetwork:
     def PER_loss(self):
         def loss(y_true, y_pred):   
             return tf.reduce_mean(self.is_weights * tf.math.squared_difference(y_true, y_pred))
-
         return loss
     
     def build_model(self):
@@ -318,6 +357,7 @@ class DQNetwork:
         advantage_norm = layers.Subtract()([advantage, tf.reduce_mean(advantage, axis=1, keepdims=True)])
         aggregation = layers.Add()([value, advantage_norm])
         output = layers.Dense(NUM_ACTIONS)(aggregation)
+
         model = keras.Model(input, output)
         model.compile(optimizer=keras.optimizers.Adam(self.learning_rate), loss=self.PER_loss())
         return model
@@ -331,7 +371,7 @@ class DQNetwork:
             action = random.choice(POSSIBLE_ACTIONS)
             
         else:
-            Qs = self.model.predict(state.reshape((1, *state.shape)))
+            Qs = self.model(state.reshape((1, *state.shape)))
             
             choice = np.argmax(Qs)
             action = POSSIBLE_ACTIONS[int(choice)]
@@ -342,6 +382,7 @@ def main():
     env = Game(config.pos_reward, config.neg_reward)
     
     agent = Agent(env)
+    
     agent.pre_train()
     agent.train()
     #agent.play()

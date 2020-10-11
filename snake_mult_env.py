@@ -1,4 +1,3 @@
-
 import math
 import random
 import pygame
@@ -10,20 +9,19 @@ CELL_SIZE = WINDOW_SIZE // ROWS
 
 START_POS = (ROWS//2+4, ROWS//2)
 RND_START_POS = False
+PERSIT_MODIFICATIONS = False
+USE_DIVIDER = True
 
 pygame.init()
 screen = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
 clock = pygame.time.Clock()
 
-training = False
-
 class Game:
     def __init__(self, pos_reward, neg_reward):
         self.terminal_cubes = []
-        self.removed_cubes = []
-        self.added_cubes = []
         self.snake = Snake(self.get_startpos(), self)
         self.reset()
+        self.add_border()
         self.high_score = 0
         self.pos_reward = pos_reward
         self.neg_reward = neg_reward
@@ -35,7 +33,7 @@ class Game:
         return START_POS
 
     def step(self, action, mouse_click=None):
-        pygame.time.wait(200)
+        #pygame.time.wait(200)
         reward = self.pos_reward
         terminal = False
 
@@ -57,7 +55,7 @@ class Game:
 
         if mouse_click:
             self.resolve_mouse_action(mouse_click)
-        self.add_border()
+
         self.snake.extend_body()
 
         self.draw_terminal_cubes()
@@ -70,8 +68,7 @@ class Game:
 
     def add_cube(self, pos, color=(255,0,0)):
         cube = Cube(pos, color=color)
-        if any(c.pos == pos for c in self.removed_cubes) and not any(b.pos == pos for b in self.snake.body):
-            return
+        
         # Check so we dont't append same cube again
         if not any(c.pos == pos for c in self.terminal_cubes):
             self.terminal_cubes.append(cube)
@@ -79,11 +76,7 @@ class Game:
     def remove_cube(self, pos):
         for c in self.terminal_cubes:
             if c.pos == pos:
-                c.erase()
-                self.removed_cubes.append(c)
                 self.terminal_cubes.remove(c)
-                if c in self.added_cubes:
-                    self.added_cubes.remove(c)
             
     def draw_terminal_cubes(self):
         for c in self.terminal_cubes:
@@ -92,10 +85,10 @@ class Game:
     def resolve_mouse_action(self, mouse_click):
         mouse_cube_pos = (int((mouse_click[0] / WINDOW_SIZE) * ROWS), int((mouse_click[1] / WINDOW_SIZE) * ROWS))
 
+        # Choose remove if cube already on the position
         if any(c.pos == mouse_cube_pos for c in self.terminal_cubes):
             self.remove_cube(mouse_cube_pos)
         else:
-            self.added_cubes.append(Cube(mouse_cube_pos, color=(0, 255, 0)))
             self.add_cube(mouse_cube_pos, color=(0, 255 , 0))
 
     def draw_grid(self):
@@ -115,24 +108,33 @@ class Game:
             self.add_cube((ROWS-1, l), color=(0, 255, 0))
             self.add_cube((l, ROWS-1), color=(0, 255, 0))
             
-        for i in range(ROWS-2):
-            self.add_cube((ROWS//2, i+1), color=(0, 255, 0))
+        # Add divider
+        if USE_DIVIDER:
+            for i in range(ROWS-2):
+                self.add_cube((ROWS//2, i+1), color=(0, 255, 0))
 
-        #print(self.terminal_cubes, " : ", self.added_cubes)
-        #self.terminal_cubes = self.terminal_cubes + self.added_cubes
-
-    def step_with_random_click(self, action):
-        #mouse_pos_x = random.randint(CELL_SIZE + 1, WINDOW_SIZE - CELL_SIZE - 1) 
-        mouse_pos_x = WINDOW_SIZE // 2
-        mouse_pos_y = random.randint(CELL_SIZE + 1, WINDOW_SIZE - CELL_SIZE - 1) 
+    def step_with_random_click(self, action, divider_click_prob = 1):
+        if USE_DIVIDER and divider_click_prob > random.random():
+            mouse_pos_x = WINDOW_SIZE // 2
+            mouse_pos_y = random.randint(CELL_SIZE + 1, WINDOW_SIZE - CELL_SIZE - 1) 
+        else:
+            mouse_pos_x = random.randint(CELL_SIZE + 1, WINDOW_SIZE - CELL_SIZE - 1)
+            mouse_pos_y = random.randint(CELL_SIZE + 1, WINDOW_SIZE - CELL_SIZE - 1)
+                
         return self.step(action, (mouse_pos_x, mouse_pos_y))
 
     def reset(self):
+        if PERSIT_MODIFICATIONS:
+            ##### TODO: Remove snake only #####
+            self.terminal_cubes.clear()
+            self.add_border()
+        else:
+            self.terminal_cubes.clear()
+            self.add_border()
+        
         self.snake.reset(self.get_startpos())
-        self.terminal_cubes.clear()
-        self.terminal_cubes = self.added_cubes.copy() # Start with user added cubes
         screen.fill((0,0,0))
-        self.add_border()
+        
         self.draw_terminal_cubes()
 
         pygame.display.update()
@@ -141,8 +143,6 @@ class Game:
 
     def complete_reset(self):
         self.terminal_cubes.clear()
-        self.removed_cubes.clear()
-        self.added_cubes.clear()
         return self.reset()
         
 class Snake(object):
@@ -183,9 +183,9 @@ class Snake(object):
         self.dirny = 1
 
     def extend_body(self):
-        cube = Cube((self.head.pos[0] - self.dirnx, self.head.pos[1] - self.dirny))
-        self.body.append(cube)
-        self.env.terminal_cubes.append(cube)
+        pos = (self.head.pos[0] - self.dirnx, self.head.pos[1] - self.dirny)
+        self.body.append(Cube(pos))
+        self.env.add_cube(pos)
 
     def draw_head(self):
         self.head.draw(eyes=True)
@@ -193,7 +193,6 @@ class Snake(object):
     def check_collision(self):
         if any(c.pos == self.head.pos for c in self.env.terminal_cubes):
             return True
-
         return False
 
 class Cube(object):
@@ -216,13 +215,6 @@ class Cube(object):
             circleMiddle2 = (i*dis + dis -radius*2, j*dis+8)
             pygame.draw.circle(screen, (0,0,0), circleMiddle, radius)
             pygame.draw.circle(screen, (0,0,0), circleMiddle2, radius)
-
-    def erase(self):
-        dis = WINDOW_SIZE // ROWS
-        i = self.pos[0]
-        j = self.pos[1]
-
-        pygame.draw.rect(screen, (0,0,0), (i*dis+1,j*dis+1, dis-2, dis-2))
 
 def play_controller(game):
     while True:
