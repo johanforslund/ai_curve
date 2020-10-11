@@ -309,7 +309,7 @@ class Agent:
 
                 loss = self.dqn_net.model.train_on_batch(states_mb, Qs_state)
 
-                self.target_update()
+            self.target_update()
 
             mean_reward = np.mean(np.array(all_rewards)[-10:])
 
