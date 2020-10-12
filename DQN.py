@@ -46,7 +46,7 @@ NUM_ACTIONS = len(POSSIBLE_ACTIONS)
 TRAIN_FROM_WEIGHTS = False
 USE_RANDOM_CLICKS = True
 DIVIDER_PROB = 1
-RND_CLICK_INTERVAL = 8
+RND_CLICK_PROB = 0.1
 
 ### MODEL HYPERPARAMETERS
 state_size = [84,84,4]
@@ -210,8 +210,8 @@ class Agent:
                     action = POSSIBLE_ACTIONS[int(choice)]
             else:
                 action = random.choice(POSSIBLE_ACTIONS)
-            rnd = random.randint(1, RND_CLICK_INTERVAL)
-            if USE_RANDOM_CLICKS and i % rnd == 0:
+
+            if USE_RANDOM_CLICKS and RND_CLICK_PROB > random.random():
                 next_state, reward, terminal = self.env.step_with_random_click(action, divider_click_prob = DIVIDER_PROB)
             else: 
                 next_state, reward, terminal = self.env.step(action)
@@ -248,8 +248,8 @@ class Agent:
                 
                 action, explore_probability = self.dqn_net.predict_action(explore_start, explore_stop, decay_rate, decay_step, state, POSSIBLE_ACTIONS)
                 
-                rnd = random.randint(1, RND_CLICK_INTERVAL)
-                if USE_RANDOM_CLICKS and step % rnd == 0:
+                
+                if USE_RANDOM_CLICKS and RND_CLICK_PROB > random.random():
                     next_state, reward, terminal = self.env.step_with_random_click(action, divider_click_prob = DIVIDER_PROB)
                 else: 
                     next_state, reward, terminal = self.env.step(action)

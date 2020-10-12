@@ -10,7 +10,7 @@ CELL_SIZE = WINDOW_SIZE // ROWS
 START_POS = (ROWS//2+4, ROWS//2)
 RND_START_POS = False
 PERSIT_MODIFICATIONS = False
-USE_DIVIDER = True
+ROOMS = 2
 
 pygame.init()
 screen = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
@@ -68,7 +68,7 @@ class Game:
 
     def add_cube(self, pos, color=(255,0,0)):
         cube = Cube(pos, color=color)
-        
+
         # Check so we dont't append same cube again
         if not any(c.pos == pos for c in self.terminal_cubes):
             self.terminal_cubes.append(cube)
@@ -109,14 +109,31 @@ class Game:
             self.add_cube((l, ROWS-1), color=(0, 255, 0))
             
         # Add divider
-        if USE_DIVIDER:
+        if ROOMS >= 2:
             for i in range(ROWS-2):
                 self.add_cube((ROWS//2, i+1), color=(0, 255, 0))
+        if ROOMS >= 3:
+            for i in range(ROWS//2-1):
+                self.add_cube((i+1, ROWS//2), color=(0, 255, 0))
+        if ROOMS >= 4:
+            for i in range(ROWS//2,ROWS-1):
+                self.add_cube((i+1, ROWS//2), color=(0, 255, 0))
 
     def step_with_random_click(self, action, divider_click_prob = 1):
-        if USE_DIVIDER and divider_click_prob > random.random():
-            mouse_pos_x = WINDOW_SIZE // 2
-            mouse_pos_y = random.randint(CELL_SIZE + 1, WINDOW_SIZE - CELL_SIZE - 1) 
+        if divider_click_prob > random.random():
+            if ROOMS >= 2:
+                mouse_pos_x = WINDOW_SIZE // 2
+                mouse_pos_y = random.randint(CELL_SIZE + 1, WINDOW_SIZE - CELL_SIZE - 1) 
+
+            if ROOMS == 3:
+                if random.random() > 0.5:
+                    mouse_pos_x = random.randint(CELL_SIZE + 1, WINDOW_SIZE // 2 - 1)
+                    mouse_pos_y = WINDOW_SIZE // 2 
+
+            elif ROOMS == 4:
+                if random.random() > 0.5:
+                    mouse_pos_x = random.randint(CELL_SIZE + 1, WINDOW_SIZE - CELL_SIZE - 1) 
+                    mouse_pos_y = WINDOW_SIZE // 2 
         else:
             mouse_pos_x = random.randint(CELL_SIZE + 1, WINDOW_SIZE - CELL_SIZE - 1)
             mouse_pos_y = random.randint(CELL_SIZE + 1, WINDOW_SIZE - CELL_SIZE - 1)
